@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-compactor-indexheader
+  namespace: observability-system
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: OrderedReady
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: mimir-compactor-indexheader
+  serviceName: mimir-compactor-indexheader
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: mimir-compactor-indexheader
+    spec:
+      containers:
+      - args:
+        - -target=compactor
+        - -log.level=debug
+        - -compactor.upload-sparse-index-headers=true
+        - -compactor.first-level-compaction-wait-period=30s
+        - -blocks-storage.backend=s3
+        - -blocks-storage.s3.bucket-name=${S3_BUCKET_NAME}
+        - -blocks-storage.s3.endpoint=${S3_ENDPOINT_URL}
+        - -blocks-storage.s3.access-key-id=${S3_ACCESS_KEY}
+        - -blocks-storage.s3.secret-access-key=${S3_SECRET_KEY}
+        - -blocks-storage.bucket-store.index-header.lazy-loading-enabled=false
+        - -blocks-storage.bucket-store.index-header.lazy-loading-idle-timeout=1m
+        - -blocks-storage.bucket-store.sync-interval=5s
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        - name: OTEL_TRACES_EXPORTER
+          value: none
+        - name: S3_BUCKET_NAME
+          valueFrom:
+            secretKeyRef:
+              name: mimir-compactor
+              key: S3_BUCKET_NAME
+        - name: S3_ENDPOINT_URL
+          valueFrom:
+            secretKeyRef:
+              name: mimir-compactor
+              key: S3_ENDPOINT_URL
+        - name: S3_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mimir-compactor
+              key: S3_ACCESS_KEY
+        - name: S3_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mimir-compactor
+              key: S3_SECRET_KEY
+        - name: S3_REGION
+          valueFrom:
+            secretKeyRef:
+              name: mimir-compactor
+              key: S3_REGION
+        image: mtr.devops.telekom.de/mcsps/mimir:latest
+        imagePullPolicy: Always
+        name: compactor
+        resources:
+          limits:
+            cpu: "12"
+            memory: 36Gi
+          requests:
+            cpu: "2"
+            memory: 4Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /data
+          name: workdir
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - emptyDir:
+          sizeLimit: 100Gi
+        name: workdir
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
