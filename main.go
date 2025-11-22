@@ -81,7 +81,7 @@ func main() {
 
 	// Parallelisierung
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 10)
+	sem := make(chan struct{}, 10) // max 10 parallele Requests
 
 	for _, block := range blocks {
 		wg.Add(1)
@@ -99,13 +99,10 @@ func main() {
 				Key:    aws.String(indexHeaderKey),
 			})
 			if err != nil {
-				var nf *types.NotFound
-				if ok := err != nil {
-					// kein Header existiert, trotzdem Block markieren
-					fmt.Printf("Block %s hat noch keinen index-header, wird trotzdem vom Compactor verarbeitet\n", block)
-				}
+				// Kein Header vorhanden, trotzdem Block markieren
+				fmt.Printf("Block %s hat noch keinen index-header, wird trotzdem vom Compactor verarbeitet\n", block)
 			} else {
-				// Retry Copy & Delete
+				// Retry-Funktion
 				retry := func(f func() error) error {
 					for i := 0; i < 3; i++ {
 						if err := f(); err != nil {
@@ -118,6 +115,7 @@ func main() {
 					return fmt.Errorf("Operation nach 3 Versuchen fehlgeschlagen")
 				}
 
+				// Copy index-header
 				err = retry(func() error {
 					_, err := client.CopyObject(ctx, &s3.CopyObjectInput{
 						Bucket:     aws.String(bucket),
