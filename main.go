@@ -8,10 +8,10 @@ import (
 	"path"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/aws/aws-sdk-go-v2/config"
 )
 
 func main() {
@@ -76,21 +76,20 @@ func main() {
 		newKey := path.Join(block, "index-header.old")
 
 		// Kopieren
+		// Kopieren
 		_, err := client.CopyObject(ctx, &s3.CopyObjectInput{
 			Bucket:     aws.String(bucket),
 			CopySource: aws.String(bucket + "/" + indexHeaderKey),
 			Key:        aws.String(newKey),
 		})
 		if err != nil {
-			var nsk *types.NoSuchKey
-			if ok := err.(*types.NoSuchKey); ok {
+			if _, ok := err.(*types.NoSuchKey); ok {
 				fmt.Printf("Kein index-header für Block %s, überspringe\n", block)
 				continue
 			}
 			log.Printf("Fehler beim Kopieren von %s: %v\n", indexHeaderKey, err)
 			continue
 		}
-
 		// Löschen, damit Compactor neue Header schreibt
 		_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: aws.String(bucket),
