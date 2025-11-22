@@ -6,38 +6,29 @@ import (
 	"log"
 	"os"
 	"regexp"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/config"
 )
 
 func main() {
 	bucket := os.Getenv("BUCKET_NAME")
 	endpoint := os.Getenv("S3_ENDPOINT")
-	region := os.Getenv("AWS_REGION")
-	accessKey := os.Getenv("S3_ACCESS_KEY")
-	secretKey := os.Getenv("S3_SECRET_KEY")
+	access := os.Getenv("S3_ACCESS_KEY")
+	secret := os.Getenv("S3_SECRET_KEY")
 
-	if bucket == "" || endpoint == "" || accessKey == "" || secretKey == "" {
-		log.Fatal("Bitte BUCKET_NAME, S3_ENDPOINT, S3_ACCESS_KEY und S3_SECRET_KEY als Env-Variablen setzen")
+	if bucket == "" || endpoint == "" || access == "" || secret == "" {
+		log.Fatal("Fehlen Env Vars: BUCKET_NAME, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY")
 	}
-	if region == "" {
-		region = "eu-central-1"
-	}
-
-	fmt.Println("=== Starte Verbindung zu S3 ===")
 
 	cfg, err := config.LoadDefaultConfig(context.Background(),
-		config.WithRegion(region),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(access, secret, "")),
+		config.WithRegion("eu-central-1"),
 	)
-	if err != nil {
-		log.Fatalf("Fehler beim Laden der Config: %v", err)
-	}
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.EndpointResolver = s3.EndpointResolverFromURL(endpoint)
@@ -46,122 +37,103 @@ func main() {
 
 	ctx := context.Background()
 
-	// Regex für Mimir Block-IDs: 12+ alphanumerische Zeichen
-	blockRegex := regexp.MustCompile(`^[0-9A-Za-z]{12,}/$`)
+	fmt.Println("=== Scanne Bucket vollständig nach meta.json ===")
 
-	fmt.Println("=== Suche rekursiv nach Blöcken ===")
-	blocks := findBlocks(ctx, client, bucket, "", blockRegex)
+	// meta.json-Erkennung
+	reMeta := regexp.MustCompile(`^(.*\/)?([0-9A-Za-z]{12,})\/meta\.json$`)
 
-	fmt.Printf("Gefundene echte Blöcke: %d\n", len(blocks))
-	if len(blocks) == 0 {
-		fmt.Println("Keine Blöcke zum Verarbeiten gefunden. Script beendet.")
+	foundBlocks := map[string]string{} // blockID → prefix
+
+	var token *string
+
+	for {
+		out, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(bucket),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			log.Fatalf("ListObjectsV2 Fehler: %v", err)
+		}
+
+		for _, obj := range out.Contents {
+			key := *obj.Key
+
+			fmt.Printf("Gefundenes Objekt: %s\n", key)
+
+			// Prüfen ob meta.json eines Blocks
+			m := reMeta.FindStringSubmatch(key)
+			if m != nil {
+				prefix := m[1]            // z.B. "anonymous/01ABC..."
+				blockID := m[2]           // reiner Block
+				prefix = strings.TrimSpace(prefix)
+
+				if !strings.HasSuffix(prefix, "/") {
+					prefix += "/"
+				}
+
+				fmt.Printf(">>> Erkannter Block: ID=%s PREFIX=%s\n", blockID, prefix)
+				foundBlocks[blockID] = prefix
+			}
+		}
+
+		if !out.IsTruncated {
+			break
+		}
+		token = out.NextContinuationToken
+	}
+
+	fmt.Printf("=== Gefundene Blöcke: %d ===\n", len(foundBlocks))
+
+	if len(foundBlocks) == 0 {
+		fmt.Println("KEINE BLÖCKE GEFUNDEN – jetzt ist klar warum dein alter Code nichts fand.")
 		return
 	}
 
-	// Parallelisierung
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 10)
+	// Jetzt pro Block index-header suchen/verschieben
+	for blockID, prefix := range foundBlocks {
+		indexKey := prefix + "index-header"
+		oldKey := prefix + "index-header.old"
 
-	for _, block := range blocks {
-		wg.Add(1)
-		go func(block string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+		fmt.Printf("Prüfe Block %s → %s\n", blockID, indexKey)
 
-			indexHeaderKey := block + "index-header"
-			newKey := block + "index-header.old"
+		_, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(indexKey),
+		})
 
-			fmt.Printf("Prüfe index-header für Block %s\n", block)
-			_, err := client.HeadObject(ctx, &s3.HeadObjectInput{
-				Bucket: aws.String(bucket),
-				Key:    aws.String(indexHeaderKey),
-			})
-			if err != nil {
-				fmt.Printf("Block %s hat noch keinen index-header, wird trotzdem verarbeitet\n", block)
-			} else {
-				fmt.Printf("Block %s hat index-header, verschiebe nach .old\n", block)
-
-				retry := func(f func() error) error {
-					for i := 0; i < 3; i++ {
-						if err := f(); err != nil {
-							fmt.Printf("Fehler: %v, retry %d/3\n", err, i+1)
-							time.Sleep(2 * time.Second)
-						} else {
-							return nil
-						}
-					}
-					return fmt.Errorf("Operation nach 3 Versuchen fehlgeschlagen")
-				}
-
-				// Copy
-				err = retry(func() error {
-					fmt.Printf("CopyObject: %s -> %s\n", indexHeaderKey, newKey)
-					_, err := client.CopyObject(ctx, &s3.CopyObjectInput{
-						Bucket:     aws.String(bucket),
-						CopySource: aws.String(bucket + "/" + indexHeaderKey),
-						Key:        aws.String(newKey),
-					})
-					return err
-				})
-				if err != nil {
-					fmt.Printf("WARN: Konnte %s nicht kopieren: %v\n", indexHeaderKey, err)
-				} else {
-					// Delete
-					_ = retry(func() error {
-						fmt.Printf("DeleteObject: %s\n", indexHeaderKey)
-						_, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{
-							Bucket: aws.String(bucket),
-							Key:    aws.String(indexHeaderKey),
-						})
-						return err
-					})
-				}
-			}
-
-			fmt.Printf("Block %s für Compactor markiert\n", block)
-		}(block)
-	}
-
-	wg.Wait()
-	fmt.Println("Fertig! Jetzt den Compactor starten, um neue Sparse Index-Header zu erzeugen.")
-}
-
-// findBlocks durchsucht rekursiv alle Unterordner nach Block-Ordnern
-func findBlocks(ctx context.Context, client *s3.Client, bucket string, prefix string, blockRegex *regexp.Regexp) []string {
-	var blocks []string
-	var nextPrefixes []string
-
-	maxKeys := int32(1000)
-	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-		Bucket:    aws.String(bucket),
-		Prefix:    aws.String(prefix),
-		Delimiter: aws.String("/"),
-		MaxKeys:   &maxKeys,
-	})
-
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			log.Fatalf("Fehler beim Listen von S3 unter Prefix '%s': %v", prefix, err)
+			fmt.Printf("Kein index-header in %s – OK\n", prefix)
+			continue
 		}
 
-		for _, cp := range page.CommonPrefixes {
-			dir := *cp.Prefix
-			if blockRegex.MatchString(dir) {
-				fmt.Printf("Erkannter Block: %s\n", dir)
-				blocks = append(blocks, dir)
-			} else {
-				fmt.Printf("Rekursiver Scan in Unterordner: %s\n", dir)
-				nextPrefixes = append(nextPrefixes, dir)
-			}
+		fmt.Printf("Verschiebe %s → %s\n", indexKey, oldKey)
+
+		// Copy
+		_, err = client.CopyObject(ctx, &s3.CopyObjectInput{
+			Bucket:     aws.String(bucket),
+			Key:        aws.String(oldKey),
+			CopySource: aws.String(bucket + "/" + indexKey),
+		})
+		if err != nil {
+			fmt.Printf("ERROR Copy: %v\n", err)
+			continue
 		}
+
+		time.Sleep(200 * time.Millisecond)
+
+		// Delete
+		_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(indexKey),
+		})
+		if err != nil {
+			fmt.Printf("ERROR Delete: %v\n", err)
+			continue
+		}
+
+		fmt.Printf("OK: Block %s markiert\n", blockID)
 	}
 
-	for _, p := range nextPrefixes {
-		blocks = append(blocks, findBlocks(ctx, client, bucket, p, blockRegex)...)
-	}
-
-	return blocks
+	fmt.Println("=== Fertig ===")
 }
 
