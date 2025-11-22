@@ -1,6 +1,7 @@
 name: Build (template)
 
 on:
+  push:
   tags:
     - "*"
 
