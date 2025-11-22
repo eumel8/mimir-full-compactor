@@ -89,7 +89,7 @@ func main() {
 				Key:    aws.String(indexHeaderKey),
 			})
 			if err != nil {
-				var nf *types.NotFound
+				// var nf *types.NotFound
 				if ok := err != nil; ok {
 					fmt.Printf("Kein index-header für Block %s, überspringe\n", block)
 					return
