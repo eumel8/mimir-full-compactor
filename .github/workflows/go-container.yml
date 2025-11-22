@@ -1,0 +1,10 @@
+name: Container (template)
+
+on:
+  push:
+    tags:
+    - "*"
+
+jobs:
+  call-workflow:
+    uses: eumel8/workflow-templates/.github/workflows/container.yaml@0.0.10
