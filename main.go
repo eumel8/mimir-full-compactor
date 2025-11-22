@@ -29,6 +29,9 @@ func main() {
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(access, secret, "")),
 		config.WithRegion("eu-central-1"),
 	)
+	if err != nil {
+		log.Fatalf("Fehler beim Laden der Config: %v", err)
+	}
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.EndpointResolver = s3.EndpointResolverFromURL(endpoint)
@@ -76,7 +79,7 @@ func main() {
 			}
 		}
 
-		if !out.IsTruncated {
+		if !aws.ToBool(out.IsTruncated) {
 			break
 		}
 		token = out.NextContinuationToken
