@@ -78,6 +78,48 @@ spec:
         volumeMounts:
         - mountPath: /data
           name: workdir
+      initContainers:
+      - env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        - name: OTEL_TRACES_EXPORTER
+          value: none
+        - name: S3_BUCKET_NAME
+          valueFrom:
+            secretKeyRef:
+              name: mimir-compactor
+              key: S3_BUCKET_NAME
+        - name: S3_ENDPOINT_URL
+          valueFrom:
+            secretKeyRef:
+              name: mimir-compactor
+              key: S3_ENDPOINT_URL
+        - name: S3_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mimir-compactor
+              key: S3_ACCESS_KEY
+        - name: S3_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mimir-compactor
+              key: S3_SECRET_KEY
+        - name: S3_REGION
+          valueFrom:
+            secretKeyRef:
+              name: mimir-compactor
+              key: S3_REGION
+        image: ghcr.io/eumel8/mimir-full-compactor:latest
+        imagePullPolicy: Always
+        name: index
+        resources:
+          limits:
+            cpu: "12"
+            memory: 36Gi
+          requests:
+            cpu: "2"
+            memory: 4Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
       dnsPolicy: ClusterFirst
       restartPolicy: Always
       schedulerName: default-scheduler
