@@ -40,6 +40,7 @@ func main() {
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.EndpointResolver = s3.EndpointResolverFromURL(endpoint)
+		o.UsePathStyle = true // ⚠️ Wichtig für OEM-S3
 	})
 
 	ctx := context.Background()
