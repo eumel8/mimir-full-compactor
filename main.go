@@ -20,6 +20,7 @@ func main() {
 	endpoint := os.Getenv("S3_ENDPOINT")
 	access := os.Getenv("S3_ACCESS_KEY")
 	secret := os.Getenv("S3_SECRET_KEY")
+	region := os.Getenv("S3_REGION")
 
 	if bucket == "" || endpoint == "" || access == "" || secret == "" {
 		log.Fatal("Fehlen Env Vars: BUCKET_NAME, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY")
@@ -27,7 +28,7 @@ func main() {
 
 	cfg, err := config.LoadDefaultConfig(context.Background(),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(access, secret, "")),
-		config.WithRegion("eu-central-1"),
+		config.WithRegion(region),
 	)
 	if err != nil {
 		log.Fatalf("Fehler beim Laden der Config: %v", err)
