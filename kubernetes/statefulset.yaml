@@ -26,10 +26,10 @@ spec:
         - -compactor.upload-sparse-index-headers=true
         - -compactor.first-level-compaction-wait-period=30s
         - -blocks-storage.backend=s3
-        - -blocks-storage.s3.bucket-name=${S3_BUCKET_NAME}
-        - -blocks-storage.s3.endpoint=${S3_ENDPOINT}
-        - -blocks-storage.s3.access-key-id=${S3_ACCESS_KEY}
-        - -blocks-storage.s3.secret-access-key=${S3_SECRET_KEY}
+        - -blocks-storage.s3.bucket-name=\"$S3_BUCKET_NAME\"
+        - -blocks-storage.s3.endpoint=\"$S3_ENDPOINT\"
+        - -blocks-storage.s3.access-key-id=\"$S3_ACCESS_KEY\"
+        - -blocks-storage.s3.secret-access-key=\"$S3_SECRET_KEY"\
         - -blocks-storage.bucket-store.index-header.lazy-loading-enabled=false
         - -blocks-storage.bucket-store.index-header.lazy-loading-idle-timeout=1m
         - -blocks-storage.bucket-store.sync-interval=5s
