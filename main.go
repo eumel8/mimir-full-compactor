@@ -12,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	//"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/config"
 )
 
@@ -46,15 +45,11 @@ func main() {
 
 	ctx := context.Background()
 
-	// Alle Block-Ordner auflisten
-	prefix := ""
+	// Alle Objekte im Bucket rekursiv listen
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-		Bucket:    aws.String(bucket),
-		Prefix:    aws.String(prefix),
-		Delimiter: aws.String("/"),
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(""),
 	})
-
-	fmt.Println("Listing blocks...")
 
 	var blocks []string
 	for paginator.HasMorePages() {
@@ -62,12 +57,19 @@ func main() {
 		if err != nil {
 			log.Fatalf("Fehler beim Listen von S3: %v", err)
 		}
-		for _, commonPrefix := range page.CommonPrefixes {
-			blocks = append(blocks, *commonPrefix.Prefix)
+		for _, obj := range page.Contents {
+			if path.Base(*obj.Key) == "index-header" {
+				blockPrefix := path.Dir(*obj.Key) + "/"
+				blocks = append(blocks, blockPrefix)
+			}
 		}
 	}
 
-	fmt.Printf("Gefundene Blöcke: %d\n", len(blocks))
+	fmt.Printf("Gefundene Blöcke mit index-header: %d\n", len(blocks))
+	if len(blocks) == 0 {
+		fmt.Println("Keine Blöcke zum Verarbeiten gefunden. Script beendet.")
+		return
+	}
 
 	// Parallelisierung
 	var wg sync.WaitGroup
@@ -83,19 +85,6 @@ func main() {
 			indexHeaderKey := path.Join(block, "index-header")
 			newKey := path.Join(block, "index-header.old")
 
-			// Prüfen, ob index-header existiert
-			_, err := client.HeadObject(ctx, &s3.HeadObjectInput{
-				Bucket: aws.String(bucket),
-				Key:    aws.String(indexHeaderKey),
-			})
-			if err != nil {
-				// var nf *types.NotFound
-				if ok := err != nil; ok {
-					fmt.Printf("Kein index-header für Block %s, überspringe\n", block)
-					return
-				}
-			}
-
 			// Retry-Funktion für Copy & Delete
 			retry := func(f func() error) error {
 				for i := 0; i < 3; i++ {
@@ -110,7 +99,7 @@ func main() {
 			}
 
 			// Copy index-header
-			err = retry(func() error {
+			err := retry(func() error {
 				_, err := client.CopyObject(ctx, &s3.CopyObjectInput{
 					Bucket:     aws.String(bucket),
 					CopySource: aws.String(bucket + "/" + indexHeaderKey),
