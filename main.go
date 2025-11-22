@@ -6,12 +6,14 @@ import (
 	"log"
 	"os"
 	"path"
+	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/aws-sdk-go-v2/config"
 )
 
 func main() {
@@ -24,9 +26,8 @@ func main() {
 	if bucket == "" || endpoint == "" || accessKey == "" || secretKey == "" {
 		log.Fatal("Bitte BUCKET_NAME, S3_ENDPOINT, S3_ACCESS_KEY und S3_SECRET_KEY als Env-Variablen setzen")
 	}
-
 	if region == "" {
-		region = "us-east-1"
+		region = "eu-central-1"
 	}
 
 	// AWS Config mit Env-Variablen
@@ -40,7 +41,7 @@ func main() {
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.EndpointResolver = s3.EndpointResolverFromURL(endpoint)
-		o.UsePathStyle = true // ⚠️ Wichtig für OEM-S3
+		o.UsePathStyle = true // ⚠️ wichtig für OEM-S3
 	})
 
 	ctx := context.Background()
@@ -56,7 +57,6 @@ func main() {
 	fmt.Println("Listing blocks...")
 
 	var blocks []string
-
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
@@ -69,40 +69,78 @@ func main() {
 
 	fmt.Printf("Gefundene Blöcke: %d\n", len(blocks))
 
-	// Jeden Block "markieren" -> index-header umbenennen/löschen
+	// Parallelisierung
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10) // max 10 parallele Requests
+
 	for _, block := range blocks {
-		fmt.Printf("Bearbeite Block: %s\n", block)
+		wg.Add(1)
+		go func(block string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-		indexHeaderKey := path.Join(block, "index-header")
-		newKey := path.Join(block, "index-header.old")
+			indexHeaderKey := path.Join(block, "index-header")
+			newKey := path.Join(block, "index-header.old")
 
-		// Kopieren
-		// Kopieren
-		_, err := client.CopyObject(ctx, &s3.CopyObjectInput{
-			Bucket:     aws.String(bucket),
-			CopySource: aws.String(bucket + "/" + indexHeaderKey),
-			Key:        aws.String(newKey),
-		})
-		if err != nil {
-			if _, ok := err.(*types.NoSuchKey); ok {
-				fmt.Printf("Kein index-header für Block %s, überspringe\n", block)
-				continue
+			// Prüfen, ob index-header existiert
+			_, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+				Bucket: aws.String(bucket),
+				Key:    aws.String(indexHeaderKey),
+			})
+			if err != nil {
+				var nf *types.NotFound
+				if ok := err != nil; ok {
+					fmt.Printf("Kein index-header für Block %s, überspringe\n", block)
+					return
+				}
 			}
-			log.Printf("Fehler beim Kopieren von %s: %v\n", indexHeaderKey, err)
-			continue
-		}
-		// Löschen, damit Compactor neue Header schreibt
-		_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(bucket),
-			Key:    aws.String(indexHeaderKey),
-		})
-		if err != nil {
-			log.Printf("Fehler beim Löschen von %s: %v\n", indexHeaderKey, err)
-			continue
-		}
 
-		fmt.Printf("Block %s markiert für Header-Recompaction\n", block)
+			// Retry-Funktion für Copy & Delete
+			retry := func(f func() error) error {
+				for i := 0; i < 3; i++ {
+					if err := f(); err != nil {
+						fmt.Printf("Fehler: %v, retry %d/3\n", err, i+1)
+						time.Sleep(2 * time.Second)
+					} else {
+						return nil
+					}
+				}
+				return fmt.Errorf("Operation nach 3 Versuchen fehlgeschlagen")
+			}
+
+			// Copy index-header
+			err = retry(func() error {
+				_, err := client.CopyObject(ctx, &s3.CopyObjectInput{
+					Bucket:     aws.String(bucket),
+					CopySource: aws.String(bucket + "/" + indexHeaderKey),
+					Key:        aws.String(newKey),
+				})
+				return err
+			})
+			if err != nil {
+				fmt.Printf("WARN: Konnte %s nicht kopieren: %v\n", indexHeaderKey, err)
+				return
+			}
+
+			// Delete original
+			err = retry(func() error {
+				_, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{
+					Bucket: aws.String(bucket),
+					Key:    aws.String(indexHeaderKey),
+				})
+				return err
+			})
+			if err != nil {
+				fmt.Printf("WARN: Konnte %s nicht löschen: %v\n", indexHeaderKey, err)
+				return
+			}
+
+			fmt.Printf("Block %s markiert für Header-Recompaction\n", block)
+		}(block)
 	}
 
+	wg.Wait()
 	fmt.Println("Fertig! Jetzt den Compactor starten, um neue Sparse Index-Header zu erzeugen.")
 }
+

@@ -1,7 +1,8 @@
 name: Build (template)
 
 on:
-  push:
+  tags:
+    - "*"
 
 jobs:
   call-workflow:
