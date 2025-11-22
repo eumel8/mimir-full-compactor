@@ -2,7 +2,7 @@ name: Build (template)
 
 on:
   push:
-  tags:
+    tags:
     - "*"
 
 jobs:
