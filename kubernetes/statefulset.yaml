@@ -1,14 +1,13 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: mimir-compactor-indexheader
-  namespace: observability-system
+  name: mimir-compactor-indexheader-02
 spec:
   persistentVolumeClaimRetentionPolicy:
     whenDeleted: Retain
     whenScaled: Retain
   podManagementPolicy: OrderedReady
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 10
   selector:
     matchLabels:
@@ -28,7 +27,7 @@ spec:
         - -compactor.first-level-compaction-wait-period=30s
         - -blocks-storage.backend=s3
         - -blocks-storage.s3.bucket-name=${S3_BUCKET_NAME}
-        - -blocks-storage.s3.endpoint=${S3_ENDPOINT_URL}
+        - -blocks-storage.s3.endpoint=${S3_ENDPOINT}
         - -blocks-storage.s3.access-key-id=${S3_ACCESS_KEY}
         - -blocks-storage.s3.secret-access-key=${S3_SECRET_KEY}
         - -blocks-storage.bucket-store.index-header.lazy-loading-enabled=false
@@ -43,11 +42,11 @@ spec:
             secretKeyRef:
               name: mimir-compactor
               key: S3_BUCKET_NAME
-        - name: S3_ENDPOINT_URL
+        - name: S3_ENDPOINT
           valueFrom:
             secretKeyRef:
               name: mimir-compactor
-              key: S3_ENDPOINT_URL
+              key: S3_ENDPOINT
         - name: S3_ACCESS_KEY
           valueFrom:
             secretKeyRef:
@@ -83,16 +82,16 @@ spec:
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
         - name: OTEL_TRACES_EXPORTER
           value: none
-        - name: S3_BUCKET_NAME
+        - name: BUCKET_NAME
           valueFrom:
             secretKeyRef:
               name: mimir-compactor
               key: S3_BUCKET_NAME
-        - name: S3_ENDPOINT_URL
+        - name: S3_ENDPOINT
           valueFrom:
             secretKeyRef:
               name: mimir-compactor
-              key: S3_ENDPOINT_URL
+              key: S3_ENDPOINT
         - name: S3_ACCESS_KEY
           valueFrom:
             secretKeyRef:
